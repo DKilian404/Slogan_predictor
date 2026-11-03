@@ -4,7 +4,8 @@ from collections import Counter
 import networkx as nx
 
 from preprocess import save_company_counts
-from generation import SloganDataset, FirstOrderGenerator, record_outcomes, save_length_statistics
+from generation import SloganDataset, FirstOrderGenerator, save_length_statistics
+from evaluation import GenerationExperiment
 from analysis import save_statistics, make_plots
 
 
@@ -31,7 +32,8 @@ def main() -> None:
     training_companies = Counter(record["company"] for record in training_records)
     save_statistics(graph, training_records, training_companies, training_output)
     make_plots(graph, training_records, training_companies, training_output)
-    record_outcomes(model, dataset, output / "generation_outcomes.txt")
+    experiment = GenerationExperiment(model, company_labels=dataset.company_counts)
+    experiment.run(output / "evaluation")
 
     print(f"CSV files: {len(files)}")
     print(f"Training records: {len(training_records)}; test records: {len(test_records)}")

@@ -74,98 +74,84 @@ class FirstOrderGenerator:
         if not self.starts:
             raise ValueError("Training records must contain at least one usable sentence.")
         self.start_weights = [self.graph.nodes[w]["start_count"] for w in self.starts]
-        self.choices = {}
-        for word in self.graph:
-            neighbors = sorted(self.graph.successors(word))
-            weights = [self.graph[word][next_word]["weight"] for next_word in neighbors]
-            # None represents stopping; it is not a word node in the graph.
-            self.choices[word] = (
-                neighbors + [None], weights + [self.graph.nodes[word]["end_count"]]
-            )
+        self.multiword_starts = [w for w in self.starts if self.graph.out_degree(w) > 0]
+        self.multiword_start_weights = [self.graph.nodes[w]["start_count"] for w in self.multiword_starts]
+        self.training_trigrams = {tuple(words[i:i + 3]) for words in self.training_sentences
+                                  for i in range(len(words) - 2)}
 
-    def generate(self, max_words=30):
-        """Return the sampled words and whether the sequence ended naturally."""
-        if max_words < 1:
-            raise ValueError("max_words must be positive.")
-        words = [self.random.choices(self.starts, weights=self.start_weights, k=1)[0]]
-        while True:
-            choices, weights = self.choices[words[-1]]
-            next_word = self.random.choices(choices, weights=weights, k=1)[0]
-            if next_word is None:
-                return words, True
-            if len(words) == max_words:
-                return words, False
-            words.append(next_word)
+    def choose_start(self, target_length):
+        """Choose a starting word with an outgoing edge for multiword requests."""
+        starts = self.multiword_starts if target_length > 1 else self.starts
+        weights = self.multiword_start_weights if target_length > 1 else self.start_weights
+        return self.random.choices(starts, weights=weights, k=1)[0] if starts else None
+
+    def generate_fixed_attempt(self, target_length):
+        """Follow transition weights until exactly N words or an early dead end."""
+        if target_length < 1:
+            raise ValueError("target_length must be positive.")
+        start = self.choose_start(target_length)
+        if start is None:
+            return [], "no_start"
+        words = [start]
+        while len(words) < target_length:
+            neighbors = sorted(self.graph.successors(words[-1]))
+            if not neighbors:
+                return words, "dead_end"
+            weights = [self.graph[words[-1]][w]["weight"] for w in neighbors]
+            words.append(self.random.choices(neighbors, weights=weights, k=1)[0])
+        return words, "completed"
 
     def generate_fixed_length(self, target_length):
-        """Sample a fixed-length walk using ending counts for its final word."""
+        """Return a fixed-length walk or None if it gets stuck early."""
+        words, status = self.generate_fixed_attempt(target_length)
+        return words if status == "completed" else None
+
+    def generate_controlled_length(self, target_length):
+        """Return a controlled-length walk or None if no valid completion is found."""
+        words, status = self.generate_controlled_attempt(target_length)
+        return words if status == "completed" else None
+
+    def generate_controlled_attempt(self, target_length):
+        """Return the words and outcome of one controlled-length attempt."""
         if target_length < 1:
             raise ValueError("target_length must be positive.")
         if target_length == 1:
             weights = [self.graph.nodes[w]["start_count"] * self.graph.nodes[w]["end_count"]
                        for w in self.starts]
             if not sum(weights):
-                return None
-            return self.random.choices(self.starts, weights=weights, k=1)
+                return [], "no_ending"
+            return self.random.choices(self.starts, weights=weights, k=1), "completed"
 
-        words = [self.random.choices(self.starts, weights=self.start_weights, k=1)[0]]
+        start = self.choose_start(target_length)
+        if start is None:
+            return [], "no_start"
+        words = [start]
         while len(words) < target_length:
             neighbors = sorted(self.graph.successors(words[-1]))
+            if not neighbors:
+                return words, "dead_end"
             if len(words) == target_length - 1:
                 weights = [self.graph.nodes[w]["end_count"] for w in neighbors]
             else:
                 weights = [self.graph[words[-1]][w]["weight"] for w in neighbors]
             if not sum(weights):
-                return None
+                return words, "no_ending"
             words.append(self.random.choices(neighbors, weights=weights, k=1)[0])
-        return words
+        return words, "completed"
 
-    def generate_at_length(self, target_length, max_attempts=100):
-        """Retry controlled-length walks until one succeeds or the limit is reached."""
+    def generate_at_length(self, target_length, max_attempts=100, method="controlled_length"):
+        """Retry the selected length rule until it succeeds or reaches the attempt limit."""
         if target_length < 1 or max_attempts < 1:
             raise ValueError("Length and attempt limit must be positive.")
+        methods = {"fixed_length": self.generate_fixed_length,
+                   "controlled_length": self.generate_controlled_length}
+        if method not in methods:
+            raise ValueError("method must be fixed_length or controlled_length.")
         for attempt in range(1, max_attempts + 1):
-            words = self.generate_fixed_length(target_length)
+            words = methods[method](target_length)
             if words is not None:
                 return words, attempt
         return None, max_attempts
-
-
-def record_outcomes(model, dataset, path, seed=42, attempts=1000, max_words=30):
-    """Save generation counts and examples for random walks and controlled lengths."""
-    if attempts < 1:
-        raise ValueError("attempts must be positive.")
-    model.random.seed(seed)
-    natural = [model.generate(max_words) for _ in range(attempts)]
-    completed = [words for words, ended in natural if ended]
-    lines = [
-        f"Split seed: {dataset.split_seed}; generation seed: {seed}",
-        f"Train: {len(dataset.train)}; test: {len(dataset.test)}",
-        f"Training nodes: {len(model.graph)}; edges: {model.graph.number_of_edges()}",
-        "", f"Random walks: {len(completed)}/{attempts} completed; word limit: {max_words}",
-        f"Mean completed random-walk length: {mean(map(len, completed)) if completed else 0:.2f} words",
-        "Words | Random walks | Controlled lengths | Controlled failures | Controlled training matches",
-    ]
-    controlled = {}
-    for length in (3, 5, 8, 10):
-        model.random.seed(seed + length)
-        outcomes = [model.generate_fixed_length(length) for _ in range(attempts)]
-        accepted = [words for words in outcomes if words is not None]
-        controlled[length] = outcomes
-        natural_count = sum(len(words) == length for words in completed)
-        matches = sum(tuple(words) in model.training_sentences for words in accepted)
-        lines.append(f"{length:5} | {natural_count}/{attempts} ({natural_count / attempts:.1%}) | "
-                     f"{len(accepted)}/{attempts} ({len(accepted) / attempts:.1%}) | "
-                     f"{attempts - len(accepted)} | {matches}")
-    lines += ["", "Controlled seeds: base seed + length; one walk per attempt.",
-              "Final-word weight: end_count among outgoing neighbors.",
-              "Examples: first five successful controlled walks per length."]
-    for length, outcomes in controlled.items():
-        lines += ["", f"{length} words:"]
-        accepted = [words for words in outcomes if words is not None]
-        lines.extend(" ".join(words) for words in accepted[:5])
-    Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return {"natural": natural, "controlled": controlled}
 
 
 def save_length_statistics(dataset, path):

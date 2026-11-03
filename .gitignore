@@ -2,3 +2,13 @@
 __pycache__/
 processed/
 local_notes/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv-*/
+.obsidian/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
