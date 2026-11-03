@@ -33,10 +33,10 @@ def build_graph(records: list[dict]) -> nx.DiGraph:
     return graph
 
 
-def graph_from_csv_files(
+def records_from_csv_files(
     csv_paths: str | Path | list[str | Path],
-) -> tuple[nx.DiGraph, list[dict], dict[str, int]]:
-    """Normalize/tokenize one or more CSVs and return graph, records, counts."""
+) -> tuple[list[dict], dict[str, int]]:
+    """Read one or more CSVs and return the records and company counts."""
     if isinstance(csv_paths, (str, Path)):
         csv_paths = [csv_paths]
 
@@ -50,4 +50,10 @@ def graph_from_csv_files(
         records.extend(file_records)
         company_counts.update(file_counts)
 
-    return build_graph(records), records, dict(company_counts)
+    return records, dict(company_counts)
+
+
+def graph_from_csv_files(csv_paths):
+    """Read CSV files and build a graph from all their records."""
+    records, company_counts = records_from_csv_files(csv_paths)
+    return build_graph(records), records, company_counts
