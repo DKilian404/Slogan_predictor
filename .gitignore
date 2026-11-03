@@ -12,3 +12,4 @@ local_notes/
 .idea/
 .DS_Store
 Thumbs.db
+.spredictor/
