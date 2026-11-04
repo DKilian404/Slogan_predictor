@@ -531,7 +531,7 @@ def save_mixed_second_order_review(output, strict_rows, fallback_rows, company_l
 
 
 def save_all_model_review(processed):
-    """Create a blinded 250-item review with five outputs per model, rule and length."""
+    """Create a blinded 250-item review targeting actual use of each added mechanism."""
     processed = Path(processed)
     models = {"first_order": "evaluation", "strict_second_order": "evaluation_second_order",
               "second_order_fallback": "evaluation_second_order_fallback",
@@ -546,21 +546,38 @@ def save_all_model_review(processed):
         groups = defaultdict(list)
         with path.open(encoding="utf-8-sig", newline="") as source:
             for row in csv.DictReader(source):
-                if row["target_achieved"] == "True":
-                    groups[row["method"], int(row["target_length"])].append(row)
-        for method in ("fixed_length", "controlled_length"):
+                if row["target_achieved"] != "True":
+                    continue
+                if variant == "second_order_fallback" and int(row["fallback_steps"]) == 0:
+                    continue
+                if variant == "predicted_link_recovery" and int(row["predicted_steps"]) == 0:
+                    continue
+                if variant == "contextual_endings" and row["ending_rule"] != "contextual":
+                    continue
+                groups[row["method"], int(row["target_length"])].append(row)
+        methods = ("controlled_length",) if variant == "contextual_endings" else ("fixed_length", "controlled_length")
+        per_condition = 10 if variant == "contextual_endings" else 5
+        for method in methods:
             for length in (3, 4, 5, 8, 10):
                 candidates = groups[method, length]
-                if len(candidates) < 5:
+                if len(candidates) < per_condition:
                     raise ValueError(f"Not enough successful outputs for {variant}, {method}, {length}.")
-                for row in rng.sample(candidates, 5):
+                for row in rng.sample(candidates, per_condition):
                     sample.append({"model_variant": variant, "attempt_id": row["attempt_id"],
                                    "method": method, "target_length": length,
-                                   "generated_text": row["generated_text"], "assigned_company": ""})
+                                   "generated_text": row["generated_text"], "assigned_company": "",
+                                   "selection": "mechanism_used_v1",
+                                   "fallback_steps": int(row.get("fallback_steps", 0)),
+                                   "predicted_steps": int(row.get("predicted_steps", 0)),
+                                   "ending_rule": row.get("ending_rule", "")})
     rng.shuffle(sample)
     review = save_review_sample(processed / "evaluation_all_models", sample)
     (review / "rubric.txt").write_text(
-        "250 items: 50 per model, 25 per length rule per model, 10 per target length per model.\n"
+        "250 items: 50 per model and 10 per target length per model.\n"
+        "Contextual endings: all 50 controlled; other models: 25 fixed and 25 controlled.\n"
+        "Fallback items require fallback_steps > 0; predicted-link items require predicted_steps > 0.\n"
+        "Contextual-ending items require ending_rule = contextual. Baseline items are ordinary successes.\n"
+        "This evaluates outputs using each mechanism, not average output quality across all attempts.\n"
         "No company labels have been added; words generated from the dataset are kept as produced.\n"
         "Everyone rates the same shuffled items independently; do not open method_key.csv first.\n"
         "Readability: 1=very broken wording; 3=understandable but awkward; 5=natural wording.\n"
@@ -592,6 +609,9 @@ def save_review_sample(output, sample):
     if sample and "model_variant" in sample[0]:
         for entry, row in zip(key, sample):
             entry["model_variant"] = row["model_variant"]
+            for field in ("selection", "fallback_steps", "predicted_steps", "ending_rule"):
+                if field in row:
+                    entry[field] = row[field]
     for reviewer in ("Hugo", "Kilian", "Vlad"):
         path = review / f"{reviewer}.csv"
         if not path.exists():

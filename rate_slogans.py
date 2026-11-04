@@ -14,7 +14,7 @@ def choose_file():
     folder = Path(__file__).parent / "processed"
     review = save_all_model_review(folder)
     files = [review / f"{name}.csv" for name in ("Hugo", "Kilian", "Vlad")]
-    print(f"All-model review: 250 items, no added company labels. Batch: {review.name}")
+    print(f"Targeted model review: 250 items, no added company labels. Batch: {review.name}")
     for number, path in enumerate(files, 1):
         print(f"{number}. {path.stem}")
     while True:
