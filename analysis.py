@@ -1,4 +1,5 @@
 import os
+import csv
 from collections import Counter
 from pathlib import Path
 
@@ -7,6 +8,93 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import networkx as nx
+
+
+def weighted_pagerank(graph, alpha=0.85, tolerance=1e-10, max_iterations=1000):
+    """Calculate PageRank using transition counts and uniform teleportation."""
+    nodes = list(graph)
+    if not nodes:
+        return {}
+    n = len(nodes)
+    rank = dict.fromkeys(nodes, 1 / n)
+    strength = dict(graph.out_degree(weight="weight"))
+    for _ in range(max_iterations):
+        dangling = sum(rank[w] for w in nodes if strength[w] == 0)
+        updated = dict.fromkeys(nodes, (1 - alpha + alpha * dangling) / n)
+        for source, target, data in graph.edges(data=True):
+            updated[target] += alpha * rank[source] * data["weight"] / strength[source]
+        if sum(abs(updated[w] - rank[w]) for w in nodes) < tolerance:
+            return updated
+        rank = updated
+    raise RuntimeError("PageRank did not converge.")
+
+
+def save_centrality_analysis(graph, output):
+    """Save centrality rankings and strength-distribution plots for the training graph."""
+    output.mkdir(parents=True, exist_ok=True)
+    paths = graph.copy()
+    paths.remove_edges_from(nx.selfloop_edges(paths))
+    measures = {
+        "in_degree": dict(graph.in_degree()), "out_degree": dict(graph.out_degree()),
+        "in_strength": dict(graph.in_degree(weight="weight")),
+        "out_strength": dict(graph.out_degree(weight="weight")),
+        "in_degree_centrality": nx.in_degree_centrality(paths),
+        "out_degree_centrality": nx.out_degree_centrality(paths),
+        "pagerank": weighted_pagerank(graph),
+        "in_closeness": nx.closeness_centrality(paths),
+        "out_closeness": nx.closeness_centrality(paths.reverse(copy=False)),
+        "betweenness": nx.betweenness_centrality(paths, k=min(256, len(paths)), seed=42),
+    }
+    with (output / "centrality.csv").open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["word", *measures])
+        writer.writeheader()
+        for word in sorted(graph):
+            writer.writerow({"word": word, **{name: values[word] for name, values in measures.items()}})
+    lines = ["# Training-network centrality", "",
+             "Degree counts distinct directed edges; strength sums transition occurrences. "
+             "Raw degree and strength include self-loops. Normalized degree, closeness and betweenness exclude loops.", "",
+             "PageRank uses transition weights, damping 0.85 and uniform teleportation/dangling redistribution. "
+             "Closeness uses directed, unweighted paths with the disconnected-graph correction: inward measures "
+             "how easily other words reach a word, outward measures how easily it reaches others. "
+             "Betweenness uses directed, unweighted shortest paths, normalized, with up to 256 sampled sources (seed 42). "
+             "It is an estimate. Transition counts are not treated as distances.", ""]
+    for name in ("in_degree", "out_degree", "in_strength", "out_strength", "pagerank",
+                 "in_closeness", "out_closeness", "betweenness"):
+        lines += [f"## {name.replace('_', ' ').title()}", "", "| Word | Score |", "| --- | ---: |"]
+        for word, value in sorted(measures[name].items(), key=lambda item: (-item[1], item[0]))[:10]:
+            lines.append(f"| {word} | {value:.6g} |")
+        lines.append("")
+    lines += ["These scores describe structural importance, not grammatical quality or suitability as a slogan word.", "",
+              "[All node scores](centrality.csv) · [Strength distributions](strength_distributions.png)"]
+    (output / "centrality.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5), layout="constrained")
+    distribution = []
+    for direction in ("in", "out"):
+        values = measures[direction + "_strength"]
+        counts = Counter(values.values())
+        remaining = len(values)
+        xs, ys, ccdf = [], [], []
+        for strength, count in sorted(counts.items()):
+            xs.append(strength); ys.append(count); ccdf.append(remaining / len(values))
+            distribution.append({"direction": direction, "strength": strength, "nodes": count,
+                                 "fraction_at_least": remaining / len(values)})
+            remaining -= count
+        axes[0].scatter(xs, ys, s=18, alpha=0.6, label=direction)
+        axes[1].step(xs, ccdf, where="post", label=direction)
+        axes[2].scatter(list(measures[direction + "_degree"].values()), list(values.values()),
+                        s=10, alpha=0.3, label=direction)
+    for ax in axes:
+        ax.set_xscale("symlog", linthresh=1)
+        ax.legend()
+    axes[0].set(title="Strength distribution", xlabel="Strength", ylabel="Words", yscale="log")
+    axes[1].set(title="Cumulative tail", xlabel="Strength", ylabel="Fraction with at least this strength", yscale="log")
+    axes[2].set(title="Degree versus strength", xlabel="Degree", ylabel="Strength")
+    axes[2].set_yscale("symlog", linthresh=1)
+    fig.savefig(output / "strength_distributions.png", dpi=160)
+    plt.close(fig)
+    with (output / "strength_distribution.csv").open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["direction", "strength", "nodes", "fraction_at_least"])
+        writer.writeheader(); writer.writerows(distribution)
 
 
 def save_statistics(graph, records, company_counts, output):
